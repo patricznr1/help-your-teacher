@@ -1,32 +1,63 @@
-# Bonus - Alternative nested structures
+# Bonus - The students nested structure
 
-The assessment uses **a list of dictionaries** to hold students:
+The assignment uses **a list of dictionaries**, where each student is
+itself a dictionary whose ``grades`` field is **also a dictionary**:
 
 ```python
-[{"name": "Alice", "grades": [90, 85]}, {"name": "Bob", "grades": [70]}]
+students = [
+    {"name": "Alice", "grades": {"English": 4, "Math": 3, "Science": 5}},
+    {"name": "Bob",   "grades": {"English": 2, "Math": 5, "Science": 4}},
+]
 ```
 
-That works, but other shapes are sometimes better. Three credible alternatives:
+That's two levels of nesting: outer **list[dict]** + inner **dict[str, float]**.
+Accessing one grade reads ``students[0]["grades"]["English"]``.
 
-## 1. Dict-of-dicts keyed by name
+## Why this shape is a good fit here
+
+- Heterogeneous subjects per student work naturally (``Bob`` could opt out
+  of one subject by omitting that key)
+- Iteration is symmetric: outer loop walks students, inner loop walks
+  subjects
+- It maps 1:1 to JSON, so it can be ``json.dump``-ed without conversion
+
+## Three credible alternatives
+
+### 1. Dict-of-dicts keyed by name
 
 ```python
-{
-    "Alice": {"grades": [90, 85]},
-    "Bob":   {"grades": [70]},
+students = {
+    "Alice": {"English": 4, "Math": 3, "Science": 5},
+    "Bob":   {"English": 2, "Math": 5, "Science": 4},
 }
 ```
 
-**Advantages**
-- O(1) lookup by name instead of an O(n) linear scan
-- Names are guaranteed unique by construction (no duplicate Alice records)
-- Less boilerplate when reading: `students["Alice"]["grades"]`
+The student name moves into the key, eliminating the inner ``"name"`` field
+entirely. Looking up a student becomes O(1) and you can't accidentally
+store two ``"Alice"`` records.
 
-**Trade-off**
-- Iteration order matters less; mixing it with insertion order is fine in Python 3.7+
-- The student "owns" their name in the data structure -- if a name has to change, the key has to be moved.
+Trade-off: iteration is over ``.items()`` instead of a plain ``for``, and
+renaming a student means re-keying the dict.
 
-## 2. List of dataclasses (or NamedTuples)
+### 2. Pandas DataFrame
+
+```python
+import pandas as pd
+df = pd.DataFrame({
+    "name":    ["Alice", "Bob"],
+    "English": [4, 2],
+    "Math":    [3, 5],
+    "Science": [5, 4],
+})
+df.set_index("name").mean(axis=1)        # per-student average
+df.set_index("name").mean(axis=0)        # per-subject average
+df[df < 4].stack()                       # failing grades
+```
+
+The bonus reports become one-liners. Trade-off: heavy dependency for a
+teaching exercise, and missing grades (NaN) need explicit handling.
+
+### 3. List of ``@dataclass`` records
 
 ```python
 from dataclasses import dataclass, field
@@ -34,42 +65,36 @@ from dataclasses import dataclass, field
 @dataclass
 class Student:
     name: str
-    grades: list[float] = field(default_factory=list)
+    grades: dict[str, float] = field(default_factory=dict)
 
-    def best(self):    return max(self.grades)
-    def average(self): return sum(self.grades) / len(self.grades)
+    def average(self):
+        return sum(self.grades.values()) / len(self.grades) if self.grades else 0.0
+    def best(self):
+        return max(self.grades.values()) if self.grades else None
 ```
 
-**Advantages**
-- Static type-checking (mypy) catches typos like `student["nmae"]`
-- Methods live with the data they describe -- the class itself is documentation
-- Equality, repr, and optional immutability come for free
+Static type-checking with mypy catches ``students[0].nmae`` typos at
+edit time, and methods live next to the data they describe. Trade-off:
+a bit more ceremony than the dict literal, and JSON serialisation
+needs an explicit ``asdict(student)``.
 
-**Trade-off**
-- Slightly more setup than a dict literal
-- JSON serialisation needs an explicit `asdict(...)`
+## How we get to the grades
 
-## 3. Pandas DataFrame (for larger classes)
+Whichever shape we pick:
 
-```python
-import pandas as pd
-df = pd.DataFrame([
-    {"name": "Alice", "grade": 90},
-    {"name": "Alice", "grade": 85},
-    {"name": "Bob",   "grade": 70},
-])
-df.groupby("name")["grade"].mean()
-```
-
-**Advantages**
-- Vectorised group-by means class average is one line
-- Easy to add columns later (course, term, weight) without changing function signatures
-- Plays well with CSV/Excel import-export
-
-**Trade-off**
-- Heavy dependency for a teaching exercise
-- Less explicit -- the structure is implicit in column names
+| Shape | One student's English grade |
+|---|---|
+| list[dict] (current) | ``students[0]["grades"]["English"]`` |
+| dict[name -> dict] | ``students["Alice"]["English"]`` |
+| DataFrame | ``df.loc["Alice", "English"]`` |
+| list[Student] (dataclass) | ``students[0].grades["English"]`` |
 
 ## TL;DR
 
-For a tiny in-memory class of a handful of students, **list of dicts** (current code) is fine. Once names need to be unique and looked up often, switch to **dict-of-dicts**. Once the schema starts to grow (extra fields per grade, multiple subjects), reach for **dataclasses** or **pandas**.
+For an interactive CLI managing a handful of students per session, the
+**list[dict] with a nested grades-dict** (the current shape) is the
+right call: cheap to build, easy to print, JSON-friendly. As soon as
+unique names + frequent lookup matters, switch to **dict-of-dicts**.
+Once you're shipping reports or stats, pandas wins. For long-lived
+shared code with multiple maintainers, **dataclasses** for the type
+safety.
